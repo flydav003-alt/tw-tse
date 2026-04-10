@@ -379,7 +379,7 @@ def _detect_inst_dataset(token, sample_id):
     for ds in ['TaiwanStockInstitutionalInvestorsBuySell',
                'TaiwanStockInstitutionalInvestors']:
         result = _fetch_inst_raw(sample_id, token, ds)
-        if result is not None and result != 'RATE_LIMIT' and not result.empty:
+        if result is not None and not isinstance(result, str) and not result.empty:
             print(f'  [籌碼偵測] ✅ 使用 dataset：{ds}（欄位：{list(result.columns[:6])}）')
             return ds
     print(f'  [籌碼偵測] ⚠️  兩個 dataset 均無資料，以空值繼續')
@@ -427,13 +427,13 @@ def fetch_all_inst(valid_ids, token):
         ok = 0
         for sid in batch:
             raw = _fetch_inst_raw(sid, token, inst_dataset)
-            if raw == 'RATE_LIMIT':
+            if isinstance(raw, str) and raw == 'RATE_LIMIT':
                 rate_limit_count += 1
                 if rate_limit_count <= 3:
                     print(f'\n  ⚠️  Token 限速，等待 5 秒...', end=' ', flush=True)
                 time.sleep(5)
                 raw = _fetch_inst_raw(sid, token, inst_dataset)  # 重試一次
-            if raw is None or raw == 'RATE_LIMIT' or raw.empty:
+            if raw is None or isinstance(raw, str) or raw.empty:
                 continue
             f_net, t_net = parse_inst(raw)
             if f_net is None and t_net is None:
