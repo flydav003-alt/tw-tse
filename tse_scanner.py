@@ -333,126 +333,131 @@ def fetch_all_prices(stock_ids, token):
     return price_data
 
 # ============================================================
-# Cell 6：抓取籌碼（Token2）
+# Cell 6：抓取籌碼 — TWSE T86 爬蟲（不消耗任何 FinMind Token）
 # ============================================================
 
-def parse_inst(raw):
-    if raw is None or raw.empty or 'name' not in raw.columns:
-        return None, None
-    df = raw.sort_values('date').copy()
-    def net_s(kws):
-        pat = '|'.join(kws)
-        sub = df[df['name'].str.contains(pat, na=False)].copy()
-        if sub.empty:
-            return pd.Series(dtype=float)
-        sub['net'] = (pd.to_numeric(sub['buy'],  errors='coerce').fillna(0) -
-                      pd.to_numeric(sub['sell'], errors='coerce').fillna(0))
-        return sub.groupby('date')['net'].sum()
-    return net_s(['Foreign_Investor','外資']), net_s(['Investment_Trust','投信'])
+def _recent_trade_dates(n=30):
+    """
+    回推 n 個週一~五的日期字串（YYYYMMDD）。
+    從昨天開始往前找，避免當天尚未收盤。
+    最多往前查 90 天以免無限迴圈。
+    """
+    dates = []
+    d = datetime.today() - timedelta(days=1)
+    while len(dates) < n and (datetime.today() - d).days <= 90:
+        if d.weekday() < 5:          # 0=Monday … 4=Friday
+            dates.append(d.strftime('%Y%m%d'))
+        d -= timedelta(days=1)
+    return sorted(dates)             # 舊→新排序，方便後續 Series 建立
 
-def _fetch_inst_raw(sid, token, dataset):
-    """單檔籌碼抓取，回傳 raw DataFrame 或 None"""
+def _fetch_t86_one_day(date_str):
+    """
+    抓單日全市場三大法人（T86 ALLBUT0999）。
+    T86 欄位（0-based index）：
+      [0]  股票代號
+      [4]  外資及陸資買賣超（千股 = 張）
+      [10] 外資及陸資合計買賣超（含自營，備用）
+      [13] 投信買賣超（千股 = 張）
+      [23] 三大法人合計
+    回傳 DataFrame(stock_id, foreign_net, trust_net) 或空 DataFrame。
+    """
+    url = ('https://www.twse.com.tw/rwd/zh/fund/T86'
+           f'?date={date_str}&selectType=ALLBUT0999&response=json')
     try:
-        r = requests.get(
-            'https://api.finmindtrade.com/api/v4/data',
-            params={'dataset': dataset, 'data_id': sid,
-                    'start_date': START_DATE, 'end_date': END_DATE,
-                    'token': token}, timeout=20)
-        rj = r.json()
-        if rj.get('status') == 200 and rj.get('data'):
-            return pd.DataFrame(rj['data'])
-        # 限速警告
-        msg = str(rj.get('msg', ''))
-        if 'request' in msg.lower() or 'limit' in msg.lower():
-            return 'RATE_LIMIT'
-        return None
+        r = requests.get(url, timeout=25,
+                         headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                                                'AppleWebKit/537.36 Chrome/120.0'})
+        j = r.json()
+        data = next((j[k] for k in ['data', 'data9', 'data0'] if k in j and j[k]), None)
+        if not data:
+            return pd.DataFrame()
+        df = pd.DataFrame(data)
+        ncol = len(df.columns)
+        if ncol < 13:
+            return pd.DataFrame()
+        df.columns = list(range(ncol))
+
+        def to_i(x):
+            try:
+                s = str(x).replace(',', '').replace('+', '').replace(' ', '').replace('－', '-').strip()
+                return int(s) if s and s != '--' else 0
+            except Exception:
+                return 0
+
+        # 投信欄位：有 24 欄時在 [13]，欄位較少的舊版在 [10] 附近
+        trust_col = 13 if ncol >= 24 else (10 if ncol >= 11 else 7)
+
+        result = pd.DataFrame({
+            'stock_id':   df[0].astype(str).str.strip().str.zfill(4),
+            'foreign_net': df[4].apply(to_i),
+            'trust_net':   df[trust_col].apply(to_i),
+        })
+        # 只保留 4 位數字代號（排除合計列、文字列）
+        return (result[result['stock_id'].str.match(r'^\d{4}$')]
+                .reset_index(drop=True))
     except Exception as e:
-        log_error(f'{sid} 籌碼({dataset})：{e}')
-        return None
+        log_error(f'T86 {date_str}：{e}')
+        return pd.DataFrame()
 
-def _detect_inst_dataset(token, sample_id):
+def fetch_all_inst(valid_ids, token):       # token 參數保留但不使用，維持介面相容
     """
-    自動偵測哪個 dataset 有資料：
-    優先用 TaiwanStockInstitutionalInvestorsBuySell（新版）
-    fallback 到 TaiwanStockInstitutionalInvestors（舊版）
+    籌碼抓取：改用 TWSE T86 官方爬蟲。
+    優點：
+      ① 完全不消耗 FinMind Token2（節省 578 calls）
+      ② 一個 request 抓全市場，30天只需 30 requests
+      ③ 不受 FinMind dataset 改版影響
+    輸出 dict 格式與原版完全相同，下游評分邏輯無需改動。
     """
-    for ds in ['TaiwanStockInstitutionalInvestorsBuySell',
-               'TaiwanStockInstitutionalInvestors']:
-        result = _fetch_inst_raw(sample_id, token, ds)
-        if result is not None and not isinstance(result, str) and not result.empty:
-            print(f'  [籌碼偵測] ✅ 使用 dataset：{ds}（欄位：{list(result.columns[:6])}）')
-            return ds
-    print(f'  [籌碼偵測] ⚠️  兩個 dataset 均無資料，以空值繼續')
-    return 'TaiwanStockInstitutionalInvestorsBuySell'
-
-def parse_inst(raw):
-    if raw is None or raw.empty or 'name' not in raw.columns:
-        return None, None
-    df = raw.sort_values('date').copy()
-
-    # ── 自動偵測買賣欄位（新版叫 buy/sell，舊版也叫 buy/sell，但有時是 Buy/Sell）──
-    buy_col  = next((c for c in ['buy',  'Buy',  'buy_amount']  if c in df.columns), None)
-    sell_col = next((c for c in ['sell', 'Sell', 'sell_amount'] if c in df.columns), None)
-    if buy_col is None or sell_col is None:
-        log_error(f'parse_inst 找不到 buy/sell 欄位，現有欄位：{list(df.columns)}')
-        return None, None
-
-    def net_s(kws):
-        pat = '|'.join(kws)
-        sub = df[df['name'].str.contains(pat, na=False)].copy()
-        if sub.empty:
-            return pd.Series(dtype=float)
-        sub['net'] = (pd.to_numeric(sub[buy_col],  errors='coerce').fillna(0) -
-                      pd.to_numeric(sub[sell_col], errors='coerce').fillna(0))
-        return sub.groupby('date')['net'].sum()
-
-    return net_s(['Foreign_Investor', '外資']), net_s(['Investment_Trust', '投信'])
-
-def fetch_all_inst(valid_ids, token):
-    EMPTY = {'foreign_consec':0,'trust_consec':0,'foreign_today':0.0,'trust_today':0.0,
-             'foreign_3d':0.0,'trust_3d':0.0}
+    EMPTY = {'foreign_consec': 0, 'trust_consec': 0,
+             'foreign_today': 0.0, 'trust_today': 0.0,
+             'foreign_3d': 0.0,   'trust_3d': 0.0}
     inst_data = {sid: dict(EMPTY) for sid in valid_ids}
-    total   = len(valid_ids)
-    batches = (total - 1) // BATCH_SIZE + 1
 
-    # ── 自動偵測 dataset（用第一檔測試）──
-    inst_dataset = _detect_inst_dataset(token, valid_ids[0])
+    # ── Step 1：抓 30 個交易日的全市場 T86 資料 ──
+    trade_dates = _recent_trade_dates(30)
+    print(f'\n[籌碼抓取] TWSE T86 模式（{len(trade_dates)} 天 × 全市場，不耗 Token）')
+    daily_inst = {}
+    for i, dt in enumerate(trade_dates):
+        df_d = _fetch_t86_one_day(dt)
+        if not df_d.empty:
+            daily_inst[dt] = df_d
+        time.sleep(0.4)
+        if (i + 1) % 10 == 0 or (i + 1) == len(trade_dates):
+            print(f'  已抓 {i+1}/{len(trade_dates)} 天  有效 {len(daily_inst)} 天', flush=True)
 
-    print(f'\n[籌碼抓取] {total} 檔（Token: ...{token[-6:]}）')
-    rate_limit_count = 0
-    for i in range(0, total, BATCH_SIZE):
-        batch    = valid_ids[i:i+BATCH_SIZE]
-        batch_no = i // BATCH_SIZE + 1
-        print(f'  批次 {batch_no}/{batches}...', end=' ', flush=True)
-        ok = 0
-        for sid in batch:
-            raw = _fetch_inst_raw(sid, token, inst_dataset)
-            if isinstance(raw, str) and raw == 'RATE_LIMIT':
-                rate_limit_count += 1
-                if rate_limit_count <= 3:
-                    print(f'\n  ⚠️  Token 限速，等待 5 秒...', end=' ', flush=True)
-                time.sleep(5)
-                raw = _fetch_inst_raw(sid, token, inst_dataset)  # 重試一次
-            if raw is None or isinstance(raw, str) or raw.empty:
-                continue
-            f_net, t_net = parse_inst(raw)
-            if f_net is None and t_net is None:
-                continue
-            inst_data[sid] = {
-                'foreign_consec': consec_buy_days(f_net),
-                'trust_consec':   consec_buy_days(t_net),
-                'foreign_today':  float(f_net.iloc[-1]) if f_net is not None and len(f_net)>0 else 0.0,
-                'trust_today':    float(t_net.iloc[-1]) if t_net is not None and len(t_net)>0 else 0.0,
-                'foreign_3d':     float(f_net.iloc[-3:].sum()) if f_net is not None and len(f_net)>=3 else 0.0,
-                'trust_3d':       float(t_net.iloc[-3:].sum()) if t_net is not None and len(t_net)>=3 else 0.0,
-            }
-            ok += 1
-        print(f'OK {ok}/{len(batch)}')
-        if i + BATCH_SIZE < total:
-            time.sleep(BATCH_DELAY)
-    total_ok = sum(1 for v in inst_data.values() if v.get('foreign_consec',0)+v.get('trust_consec',0) > 0
-                   or v.get('foreign_today',0) != 0 or v.get('trust_today',0) != 0)
-    print(f'✅ 籌碼完成  有效資料 {total_ok} / {total} 檔')
+    if not daily_inst:
+        print('  ⚠️  T86 全部無資料（假日？收盤前？），籌碼欄位保持 0，不影響其他模組')
+        return inst_data
+
+    sorted_dates = sorted(daily_inst.keys())
+    print(f'  T86 資料範圍：{sorted_dates[0]} → {sorted_dates[-1]}')
+
+    # ── Step 2：逐檔組裝時間序列，計算指標 ──
+    ok_count = 0
+    for sid in valid_ids:
+        f_list, t_list = [], []
+        for dt in sorted_dates:
+            rows = daily_inst[dt]
+            match = rows[rows['stock_id'] == sid]
+            f_list.append(int(match['foreign_net'].iloc[0]) if not match.empty else 0)
+            t_list.append(int(match['trust_net'].iloc[0])   if not match.empty else 0)
+
+        f_s = pd.Series(f_list, dtype=float)
+        t_s = pd.Series(t_list, dtype=float)
+
+        if f_s.abs().sum() > 0 or t_s.abs().sum() > 0:
+            ok_count += 1
+
+        inst_data[sid] = {
+            'foreign_consec': consec_buy_days(f_s),
+            'trust_consec':   consec_buy_days(t_s),
+            'foreign_today':  float(f_s.iloc[-1])        if len(f_s) > 0  else 0.0,
+            'trust_today':    float(t_s.iloc[-1])        if len(t_s) > 0  else 0.0,
+            'foreign_3d':     float(f_s.iloc[-3:].sum()) if len(f_s) >= 3 else 0.0,
+            'trust_3d':       float(t_s.iloc[-3:].sum()) if len(t_s) >= 3 else 0.0,
+        }
+
+    print(f'✅ 籌碼完成（T86）  有效 {ok_count} / {len(valid_ids)} 檔')
     return inst_data
 
 # ============================================================
@@ -492,7 +497,7 @@ def calc_yoy_revenue(sid, token):
             if rev_col is None or rev_df.empty:
                 return None
 
-            rev_df = rev_df.sort_values('date').reset_index(drop=True)
+            rev_df = rev_df.sort_values('date', ascending=False).reset_index(drop=True)
             rev_df[rev_col] = pd.to_numeric(rev_df[rev_col], errors='coerce')
             rev_df = rev_df.dropna(subset=[rev_col])
             rev_df = rev_df[rev_df[rev_col] > 0].reset_index(drop=True)
@@ -501,17 +506,16 @@ def calc_yoy_revenue(sid, token):
                 return None
 
             # ── 找最近有效期（最多往前 2 期，相容月底前還未公告的情況）──
+            # ascending=False → iloc[0] 最新，iloc[12] 去年同期
             for offset in [0, 1, 2]:
-                idx_latest = len(rev_df) - 1 - offset
-                idx_prev   = idx_latest - 12
-                if idx_prev < 0:
+                if offset + 12 >= len(rev_df):
                     continue
-                latest_rev = rev_df[rev_col].iloc[idx_latest]
-                prev_rev   = rev_df[rev_col].iloc[idx_prev]
-                if prev_rev > 0 and latest_rev > 0:
+                latest_rev = rev_df[rev_col].iloc[offset]
+                prev_rev   = rev_df[rev_col].iloc[offset + 12]
+                if latest_rev > 0 and prev_rev > 0:
                     yoy = round((latest_rev - prev_rev) / prev_rev * 100, 1)
                     if offset > 0:
-                        log_error(f'{sid} 月營收：使用前 {offset} 期（{rev_df["date"].iloc[idx_latest]}）')
+                        log_error(f'{sid} 月營收：使用前 {offset} 期（{rev_df["date"].iloc[offset]}）')
                     return yoy
 
             return None
