@@ -16,9 +16,12 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
-      - name: 安裝套件
-        run: pip install --upgrade pip && pip install - requirements.txt
-      - name: 執行選股
+      - name: 安裝 Python 套件
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 執行上市選股系統
         env:
           FINMIND_TOKEN_1:  ${{ secrets.FINMIND_TOKEN_1 }}
           FINMIND_TOKEN_2:  ${{ secrets.FINMIND_TOKEN_2 }}
