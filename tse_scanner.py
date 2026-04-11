@@ -562,8 +562,10 @@ def export_html(price_data,inst,fin,nm,sdf,edf,sc_list,ec_list,s_charts,e_charts
     top1_score=fn(comp_df.iloc[0]['composite_score']) if not comp_df.empty else '-'
     sch=build_chart_html(s_charts,sdf,'total_score') if s_charts else ''
     ech=build_chart_html(e_charts,edf,'total_ew_score') if e_charts else ''
-    comp_df2=comp_df.copy()
-    if not comp_df2.empty: comp_df2.insert(0,'rank',range(1,len(comp_df2)+1))
+    comp_df2 = comp_df.copy()
+    if not comp_df2.empty:
+        comp_df2 = comp_df2.drop(columns=['rank'], errors='ignore')
+        comp_df2.insert(0, 'rank', range(1, len(comp_df2) + 1))
     cch=build_chart_html(c_charts,comp_df2,'composite_score') if c_charts else ''
     nodata='<p style="color:#7c7894;text-align:center;padding:20px">無K線圖</p>'
 
