@@ -65,4 +65,5 @@ jobs:
           git add output/index.html docs/index.html 2>/dev/null || true
 
           git diff --cached --quiet || git commit -m "Update: 上市選股報告 $(date +'%Y-%m-%d')"
+          git pull --rebase origin main
           git push
