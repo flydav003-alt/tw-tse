@@ -343,6 +343,9 @@ def run_strong_filter(pd_,inst,fin,nm):
             'strength':'強' if sc>18 else('中' if sc>=12 else '弱'),
             '_vr':last['vol_ratio'],'_mb':mb,'_ic':float(ic*INST_CONSEC_WEIGHT),'_dp':dp,'_h20':h20,
             'turnover_億':round((last.get('turnover',0) or 0)/1e8,2)})
+    # 保底：確保每筆都有 total_score（空清單或單筆都安全）
+    for c in cands:
+        c.setdefault('total_score', c['score'])
     if len(cands)>=2:
         vz=safe_zscore([c['_vr'] for c in cands]); mz=safe_zscore([c['_mb'] for c in cands])
         iz=safe_zscore([c['_ic'] for c in cands]); dz=safe_zscore([c['_dp'] for c in cands])
@@ -351,14 +354,15 @@ def run_strong_filter(pd_,inst,fin,nm):
         for i,c in enumerate(cands):
             z=W_VOL_RATIO/ws*vz[i]+W_HIGH20/ws*mz[i]+W_MA28_BIAS/ws*iz[i]+W_RETURN_PCT/ws*dz[i]+W_INST_DAYS/ws*hz[i]
             c['total_score']=round(c['score']+float(z),2)
-    else:
-        for c in cands: c['total_score']=c['score']
     for c in cands:
         if c.get('ma28_bias',0)>35: c['total_score']-=18
         elif c.get('ma28_bias',0)>25: c['total_score']-=10
         if c.get('daily_return_pct',0)>9.5: c['total_score']-=12
         if c.get('rsi14',0)>78: c['total_score']-=8
         c['total_score']=round(max(c['total_score'],0),2)
+    if not cands:
+        print(f'\n【強勢確認】0 檔')
+        return pd.DataFrame(), []
     sdf=pd.DataFrame(cands).sort_values('total_score',ascending=False).reset_index(drop=True)
     if not sdf.empty: sdf.insert(0,'rank',range(1,len(sdf)+1))
     print(f'\n【強勢確認】{len(cands)} 檔'); return sdf,cands
