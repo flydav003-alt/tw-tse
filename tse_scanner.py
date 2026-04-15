@@ -60,6 +60,15 @@ EW_BONUS_YOY=15.0; EW_BONUS_YOY_THRESHOLD=15.0
 EW_BONUS_INST=24.0; EW_BONUS_60D=22.0
 COMPOSITE_EARLY_W=0.52; COMPOSITE_TOTAL_W=0.48; INST_CONSEC_WEIGHT=2.2
 MIN_DAYS=60; ERROR_LOG="error_log.txt"
+
+# ★ 統一匯出欄位（19欄，與OTC對齊）
+EXPORT_COLS = [
+    'stock_id', 'name', 'close', 'vol_ratio', 'daily_return_pct',
+    'ma28_bias_pct', 'turnover_億', 'rsi14', 'inst_consec_days',
+    'yoy_revenue_pct', 'foreign_today', 'trust_today',
+    'foreign_3d', 'trust_3d', 'is_strong_confirm', 'is_early_breakout',
+    'total_score', 'early_score', 'composite_score'
+]
 # ★ v3.1 修改：各區顯示數量
 TOP_STRONG=10; TOP_EARLY=15; TOP_COMPOSITE=15; TOP_CHART=5
 BATCH_PRICE=40; DELAY_PRICE=1.5; BATCH_REV=40; DELAY_REV=1.5
@@ -454,11 +463,13 @@ def export_csv(pd_,inst,fin,nm,sdf,edf):
     rows=[]
     for sid,df in pd_.items():
         if df is None or df.empty: continue
+        is_s=sid in ss; is_e=sid in es
+        if not is_s and not is_e: continue  # 只匯出入選股
         last=df.iloc[-1].to_dict(); vm5=last.get('vol_ma5',0) or 0; cl=last.get('close',0)
         m28=last.get('MA28',0) or 0; vr=(last.get('volume',0)/vm5) if vm5>0 else 0
         dp=last.get('daily_return',0)*100; mb=((cl-m28)/m28*100) if m28>0 else 0
         td=last.get('turnover',0) or 0; info=inst.get(sid,{})
-        is_s=sid in ss; is_e=sid in es; ts=ssm.get(sid,0); ep=esm.get(sid,0)
+        ts=ssm.get(sid,0); ep=esm.get(sid,0)
         try:
             tsf=float(ts) if ts else 0; esf=float(ep) if ep else 0
             if is_s and is_e: comp=round(esf*COMPOSITE_EARLY_W+tsf*COMPOSITE_TOTAL_W,2)
@@ -475,18 +486,12 @@ def export_csv(pd_,inst,fin,nm,sdf,edf):
             'foreign_today':info.get('foreign_today',0),'trust_today':info.get('trust_today',0),
             'foreign_3d':info.get('foreign_3d',0),'trust_3d':info.get('trust_3d',0),
             'is_strong_confirm':is_s,'is_early_breakout':is_e,
-            'total_score':ts if ts else 0,'early_score':ep if ep else 0,'composite_score':comp,
-            'reject_reason':'通過' if is_s else '未通過','early_reject_reason':'通過' if is_e else '未通過'})
-    full=pd.DataFrame(rows).sort_values('composite_score',ascending=False).reset_index(drop=True)
-    full.insert(0,'rank',range(1,len(full)+1))
-    cols=['rank','stock_id','name','close','vol_ratio','daily_return_pct','ma28_bias_pct',
-          'turnover_億','rsi14','inst_consec_days','yoy_revenue_pct','foreign_today',
-          'trust_today','foreign_3d','trust_3d','is_strong_confirm','is_early_breakout',
-          'total_score','early_score','composite_score','reject_reason','early_reject_reason']
-    full=full[cols]; os.makedirs('output',exist_ok=True)
-    fn=f'output/Twgogogo_{TODAY_STR}.csv'
-    full.to_csv(fn,index=False,encoding='utf-8-sig')
-    print(f'\n✅ {fn}（{len(full)} 筆）'); return fn,full
+            'total_score':ts if ts else 0,'early_score':ep if ep else 0,'composite_score':comp})
+    full=pd.DataFrame(rows).sort_values('composite_score',ascending=False).reset_index(drop=True) if rows else pd.DataFrame(columns=EXPORT_COLS)
+    os.makedirs('output',exist_ok=True)
+    fn=f'output/tse_{TODAY_STR}.csv'
+    full[EXPORT_COLS].to_csv(fn,index=False,encoding='utf-8-sig')
+    print(f'\n✅ {fn}（{len(full)} 筆，僅入選股）'); return fn,full
 
 
 # ═══ 星星條件判斷 ═══
@@ -943,7 +948,7 @@ def send_email(csv_fn,html_fn,sdf,edf,sc,ec,ns):
     body=f'台股GOGOGO v3.0 {TODAY_DISP}\n掃描{ns}檔 強勢{sc} 預警{ec}'
     if GITHUB_PAGES_URL: body+=f'\n報告：{GITHUB_PAGES_URL}'
     msg.attach(MIMEText(body,'plain','utf-8'))
-    for fpath in [csv_fn,html_fn]:
+    for fpath in [csv_fn]:  # 只附加CSV，HTML請至GitHub Pages查看
         if fpath and os.path.exists(fpath):
             with open(fpath,'rb') as f:
                 part=MIMEBase('application','octet-stream'); part.set_payload(f.read())
