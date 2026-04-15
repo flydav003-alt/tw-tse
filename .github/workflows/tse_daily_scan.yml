@@ -50,19 +50,19 @@ jobs:
           # 把 HTML 複製為 index.html（GitHub Pages 讀這裡）
           NEW_HTML=$(ls output/TSE_report_*.html 2>/dev/null | head -1)
           if [ -n "$NEW_HTML" ]; then
-            cp "$NEW_HTML" output/index.html
             cp "$NEW_HTML" docs/index.html
           fi
 
-          # 清掉舊檔
+          # 清掉舊 CSV
+          git rm -f output/tse_*.csv 2>/dev/null || true
           git rm -f output/Twgogogo_*.csv 2>/dev/null || true
-          git rm -f output/TSE_report_*.html 2>/dev/null || true
 
-          # 加入最新檔
-          LATEST_CSV=$(ls output/Twgogogo_*.csv 2>/dev/null | head -1)
+          # 加入最新 CSV
+          LATEST_CSV=$(ls output/tse_*.csv 2>/dev/null | head -1)
           [ -n "$LATEST_CSV" ] && git add "$LATEST_CSV"
 
-          git add output/index.html docs/index.html 2>/dev/null || true
+          # 加入 GitHub Pages HTML
+          git add docs/index.html 2>/dev/null || true
 
           git diff --cached --quiet || git commit -m "Update: 上市選股報告 $(date +'%Y-%m-%d')"
           git pull --rebase origin main
